@@ -31,6 +31,7 @@ The tool only reads local network information. It does not change settings, requ
 ## Verify
 
 ```sh
+swift build --product macip
 swift run MacIPChecks
 bash scripts/check-cli.sh .build/debug/macip
 ```

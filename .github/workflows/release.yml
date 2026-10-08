@@ -11,6 +11,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - run: swift build --product macip
       - run: swift run MacIPChecks
       - run: bash scripts/check-cli.sh .build/debug/macip
       - name: Build archive
