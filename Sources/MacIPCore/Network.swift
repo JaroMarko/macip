@@ -2,6 +2,7 @@ import Darwin
 import Foundation
 import Dispatch
 import SystemConfiguration
+import IOKit
 
 public struct NetworkAddress: Equatable, Sendable {
     public let family: String
@@ -26,6 +27,7 @@ public struct NetworkInterface: Equatable, Sendable {
     public let isRunning: Bool
     public let isLoopback: Bool
     public let addresses: [NetworkAddress]
+    public let isUSBEthernet: Bool
     public let isWiFi: Bool
     public let isLinkActive: Bool?
     public let isPrimary: Bool
@@ -35,13 +37,15 @@ public struct NetworkInterface: Equatable, Sendable {
     public init(name: String, label: String, isUp: Bool, isRunning: Bool,
                 isLoopback: Bool, addresses: [NetworkAddress],
                 isWiFi: Bool = false, isLinkActive: Bool? = nil, isPrimary: Bool = false,
-                macAddress: String? = nil, macIsHardware: Bool = false) {
+                macAddress: String? = nil, macIsHardware: Bool = false,
+                isUSBEthernet: Bool = false) {
         self.name = name
         self.label = label
         self.isUp = isUp
         self.isRunning = isRunning
         self.isLoopback = isLoopback
         self.addresses = addresses
+        self.isUSBEthernet = isUSBEthernet
         self.isWiFi = isWiFi
         self.isLinkActive = isLinkActive
         self.isPrimary = isPrimary
@@ -59,6 +63,7 @@ public enum NetworkCollector {
         defer { if let head { freeifaddrs(head) } }
 
         let metadata = interfaceMetadata()
+        let usbEthernet = usbEthernetNames().subtracting(metadata.wifi)
         let primary = Set(["IPv4", "IPv6"].compactMap { family -> String? in
             let value = SCDynamicStoreCopyValue(nil, "State:/Network/Global/\(family)" as CFString) as? [String: Any]
             return value?["PrimaryInterface"] as? String
@@ -117,7 +122,8 @@ public enum NetworkCollector {
                 isLinkActive: link?["Active"] as? Bool,
                 isPrimary: primary.contains(name),
                 macAddress: mac,
-                macIsHardware: currentMAC == nil && mac != nil
+                macIsHardware: currentMAC == nil && mac != nil,
+                isUSBEthernet: usbEthernet.contains(name)
             )
         }
     }
@@ -137,6 +143,37 @@ public enum NetworkCollector {
             }
         }
         return count
+    }
+
+    // A live USB host device identifies a real Ethernet port without relying on
+    // localized labels or interface numbers. Internal USB device-mode links and
+    // Thunderbolt virtual ports have neither provider and remain filtered.
+    private static func usbEthernetNames() -> Set<String> {
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault,
+                IOServiceMatching("IOEthernetInterface"), &iterator) == KERN_SUCCESS else { return [] }
+        defer { IOObjectRelease(iterator) }
+        var names = Set<String>()
+        var entry = IOIteratorNext(iterator)
+        while entry != 0 {
+            let name = IORegistryEntryCreateCFProperty(entry, "BSD Name" as CFString,
+                                                       kCFAllocatorDefault, 0)?.takeRetainedValue() as? String
+            var node = entry
+            while node != 0 {
+                if IOObjectConformsTo(node, "IOUSBHostDevice") != 0 ||
+                   IOObjectConformsTo(node, "IOUSBDevice") != 0 {
+                    if let name { names.insert(name) }
+                    IOObjectRelease(node)
+                    break
+                }
+                var parent: io_registry_entry_t = 0
+                let status = IORegistryEntryGetParentEntry(node, kIOServicePlane, &parent)
+                IOObjectRelease(node)
+                node = status == KERN_SUCCESS ? parent : 0
+            }
+            entry = IOIteratorNext(iterator)
+        }
+        return names
     }
 
     private static func interfaceMetadata() -> (labels: [String: String], wifi: Set<String>, hardware: [String: String]) {

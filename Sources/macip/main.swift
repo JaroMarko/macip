@@ -3,7 +3,7 @@ import Foundation
 import MacIPCore
 import SystemConfiguration
 
-private let version = "0.2.2"
+private let version = "0.2.3"
 
 private enum CLIError: Error, CustomStringConvertible {
     case usage(String)

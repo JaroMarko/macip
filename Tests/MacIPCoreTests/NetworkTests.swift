@@ -84,17 +84,20 @@ struct MacIPChecks {
 
         func interface(_ name: String, _ ips: [String] = [], up: Bool = true,
                        wifi: Bool = false, link: Bool? = nil, primary: Bool = false,
-                       loopback: Bool = false) -> NetworkInterface {
+                       loopback: Bool = false, ethernet: Bool = false) -> NetworkInterface {
             NetworkInterface(name: name, label: name, isUp: up, isRunning: up,
                 isLoopback: loopback, addresses: ips.map {
                     NetworkAddress(family: $0.contains(":") ? "inet6" : "inet", address: $0,
                                    netmask: nil, prefixLength: nil)
-                }, isWiFi: wifi, isLinkActive: link, isPrimary: primary)
+                }, isWiFi: wifi, isLinkActive: link, isPrimary: primary,
+                   isUSBEthernet: ethernet)
         }
         let visibilityCases: [(NetworkInterface, Bool, String)] = [
             (interface("en9", wifi: true, link: false), true, "Disconnected Wi-Fi stays visible"),
             (interface("en12", link: true), true, "Connected Ethernet without IP stays visible"),
-            (interface("en4", link: false), false, "Unused Ethernet adapter is hidden"),
+            (interface("en13", link: false, ethernet: true), true, "Present dock Ethernet without cable stays visible"),
+            (interface("en20", up: false, link: false, ethernet: true), true, "Present disabled Ethernet stays visible"),
+            (interface("en4", link: false), false, "Internal Ethernet interface is hidden"),
             (interface("en2", link: false), false, "Unused Thunderbolt port is hidden"),
             (interface("en2", ["fe80::1"], link: false), false, "Disconnected link-local-only port is hidden"),
             (interface("en2", ["10.0.0.2"], link: false), true, "Assigned IPv4 remains visible even without link"),
