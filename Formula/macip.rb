@@ -1,9 +1,9 @@
 class Macip < Formula
   desc "Simple read-only IP address viewer for macOS"
   homepage "https://github.com/JaroMarko/macip"
-  url "https://github.com/JaroMarko/macip/releases/download/v0.2.1/macip-macos-universal.tar.gz"
-  version "0.2.1"
-  sha256 "33fbdc0fdab2249c0d4ce51daef0b10a25be98aa83a848462d638527606564ef"
+  url "https://github.com/JaroMarko/macip/releases/download/v0.2.2/macip-macos-universal.tar.gz"
+  version "0.2.2"
+  sha256 "2fb25c49957653183de42004ad8fe296e62020c259240bd18ab7525d5b551420"
   license "MIT"
 
   depends_on :macos
@@ -17,7 +17,7 @@ class Macip < Formula
   end
 
   test do
-    assert_match "macip 0.2.1", shell_output("#{bin}/macip --version")
+    assert_match "macip 0.2.2", shell_output("#{bin}/macip --version")
     assert_match "127.0.0.1", shell_output("#{bin}/ip a show lo0")
   end
 end
