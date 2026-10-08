@@ -7,12 +7,14 @@ public struct NetworkAddress: Equatable, Sendable {
     public let address: String
     public let netmask: String?
     public let prefixLength: Int?
+    public let broadcast: String?
 
-    public init(family: String, address: String, netmask: String?, prefixLength: Int?) {
+    public init(family: String, address: String, netmask: String?, prefixLength: Int?, broadcast: String? = nil) {
         self.family = family
         self.address = address
         self.netmask = netmask
         self.prefixLength = prefixLength
+        self.broadcast = broadcast
     }
 }
 
@@ -26,10 +28,13 @@ public struct NetworkInterface: Equatable, Sendable {
     public let isWiFi: Bool
     public let isLinkActive: Bool?
     public let isPrimary: Bool
+    public let macAddress: String?
+    public let macIsHardware: Bool
 
     public init(name: String, label: String, isUp: Bool, isRunning: Bool,
                 isLoopback: Bool, addresses: [NetworkAddress],
-                isWiFi: Bool = false, isLinkActive: Bool? = nil, isPrimary: Bool = false) {
+                isWiFi: Bool = false, isLinkActive: Bool? = nil, isPrimary: Bool = false,
+                macAddress: String? = nil, macIsHardware: Bool = false) {
         self.name = name
         self.label = label
         self.isUp = isUp
@@ -39,6 +44,8 @@ public struct NetworkInterface: Equatable, Sendable {
         self.isWiFi = isWiFi
         self.isLinkActive = isLinkActive
         self.isPrimary = isPrimary
+        self.macAddress = macAddress
+        self.macIsHardware = macIsHardware
     }
 }
 
@@ -55,19 +62,31 @@ public enum NetworkCollector {
             let value = SCDynamicStoreCopyValue(nil, "State:/Network/Global/\(family)" as CFString) as? [String: Any]
             return value?["PrimaryInterface"] as? String
         })
-        var records: [String: (flags: UInt32, addresses: [NetworkAddress])] = [:]
+        var records: [String: (flags: UInt32, addresses: [NetworkAddress], mac: String?)] = [:]
         var current = head
         while let node = current {
             let entry = node.pointee
             current = entry.ifa_next
             guard let namePointer = entry.ifa_name else { continue }
             let name = String(cString: namePointer)
-            var record = records[name] ?? (flags: 0, addresses: [])
+            var record = records[name] ?? (flags: 0, addresses: [], mac: nil)
             record.flags |= entry.ifa_flags
-            if let address = entry.ifa_addr,
-               let value = networkAddress(address, mask: entry.ifa_netmask),
-               !record.addresses.contains(value) {
-                record.addresses.append(value)
+            if let address = entry.ifa_addr {
+                if Int32(address.pointee.sa_family) == AF_LINK {
+                    record.mac = hardwareAddress(UnsafeRawPointer(address)) ?? record.mac
+                } else {
+                    var broadcast: String?
+                    if Int32(address.pointee.sa_family) == AF_INET,
+                       entry.ifa_flags & UInt32(IFF_BROADCAST) != 0,
+                       let destination = entry.ifa_dstaddr,
+                       Int32(destination.pointee.sa_family) == AF_INET {
+                        broadcast = numericHost(destination)
+                    }
+                    if let value = networkAddress(address, mask: entry.ifa_netmask, broadcast: broadcast),
+                       !record.addresses.contains(value) {
+                        record.addresses.append(value)
+                    }
+                }
             }
             records[name] = record
         }
@@ -75,6 +94,11 @@ public enum NetworkCollector {
         return records.keys.sorted().compactMap { name in
             guard let record = records[name] else { return nil }
             let link = SCDynamicStoreCopyValue(nil, "State:/Network/Interface/\(name)/Link" as CFString) as? [String: Any]
+            // macOS may redact Wi-Fi MAC in getifaddrs. ifconfig reports the current
+            // address, including Private Wi-Fi Address; hardware metadata may not.
+            let needsCurrentMAC = metadata.wifi.contains(name) || record.mac == "02:00:00:00:00:00"
+            let currentMAC = needsCurrentMAC ? currentHardwareAddress(name) : record.mac
+            let mac = currentMAC ?? metadata.hardware[name]
             return NetworkInterface(
                 name: name, label: metadata.labels[name] ?? (name.hasPrefix("utun") ? "Tunnel" : name),
                 isUp: record.flags & UInt32(IFF_UP) != 0,
@@ -85,7 +109,9 @@ public enum NetworkCollector {
                 },
                 isWiFi: metadata.wifi.contains(name),
                 isLinkActive: link?["Active"] as? Bool,
-                isPrimary: primary.contains(name)
+                isPrimary: primary.contains(name),
+                macAddress: mac,
+                macIsHardware: currentMAC == nil && mac != nil
             )
         }
     }
@@ -107,13 +133,19 @@ public enum NetworkCollector {
         return count
     }
 
-    private static func interfaceMetadata() -> (labels: [String: String], wifi: Set<String>) {
+    private static func interfaceMetadata() -> (labels: [String: String], wifi: Set<String>, hardware: [String: String]) {
         guard let interfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else {
-            return ([:], [])
+            return ([:], [], [:])
         }
         var labels: [String: String] = [:]
         var wifi = Set<String>()
+        var hardware: [String: String] = [:]
         for interface in interfaces {
+            if let name = SCNetworkInterfaceGetBSDName(interface),
+               let value = SCNetworkInterfaceGetHardwareAddressString(interface),
+               (value as String).lowercased() != "02:00:00:00:00:00" {
+                hardware[name as String] = (value as String).lowercased()
+            }
             if let name = SCNetworkInterfaceGetBSDName(interface),
                SCNetworkInterfaceGetInterfaceType(interface) == kSCNetworkInterfaceTypeIEEE80211 {
                 wifi.insert(name as String)
@@ -123,11 +155,12 @@ public enum NetworkCollector {
                 labels[name as String] = label as String
             }
         }
-        return (labels, wifi)
+        return (labels, wifi, hardware)
     }
 
     private static func networkAddress(_ address: UnsafePointer<sockaddr>,
-                                       mask: UnsafePointer<sockaddr>?) -> NetworkAddress? {
+                                       mask: UnsafePointer<sockaddr>?,
+                                       broadcast: String?) -> NetworkAddress? {
         let family = Int32(address.pointee.sa_family)
         guard family == AF_INET || family == AF_INET6,
               let host = numericHost(address) else { return nil }
@@ -140,7 +173,7 @@ public enum NetworkCollector {
             prefix = prefixLength(bytes: bytes)
         }
         return NetworkAddress(family: family == AF_INET ? "inet" : "inet6",
-                              address: host, netmask: maskText, prefixLength: prefix)
+                              address: host, netmask: maskText, prefixLength: prefix, broadcast: broadcast)
     }
 
     /// Restores a compact BSD netmask to its full address bytes.
@@ -167,6 +200,48 @@ public enum NetworkCollector {
             bytes[index] = mask.load(fromByteOffset: offset + index, as: UInt8.self)
         }
         return bytes
+    }
+
+    /// Reads the current six-byte MAC from an AF_LINK sockaddr, including variable-length names.
+    /// The pointer must reference at least max(1, sdl_len) readable bytes.
+    public static func hardwareAddress(_ link: UnsafeRawPointer) -> String? {
+        let length = Int(link.load(as: UInt8.self))
+        guard let nameOffset = MemoryLayout<sockaddr_dl>.offset(of: \.sdl_nlen),
+              let addressOffset = MemoryLayout<sockaddr_dl>.offset(of: \.sdl_alen),
+              let dataOffset = MemoryLayout<sockaddr_dl>.offset(of: \.sdl_data),
+              length > max(nameOffset, addressOffset) else { return nil }
+        let nameLength = Int(link.load(fromByteOffset: nameOffset, as: UInt8.self))
+        let addressLength = Int(link.load(fromByteOffset: addressOffset, as: UInt8.self))
+        let start = dataOffset + nameLength
+        guard addressLength == 6, start + addressLength <= length else { return nil }
+        return (0..<addressLength).map {
+            String(format: "%02x", link.load(fromByteOffset: start + $0, as: UInt8.self))
+        }.joined(separator: ":")
+    }
+
+    private static func currentHardwareAddress(_ name: String) -> String? {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
+        process.arguments = [name] // Argument array, never interpreted by a shell.
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0,
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        for line in text.split(separator: "\n") {
+            let fields = line.split(whereSeparator: { $0.isWhitespace })
+            guard fields.count >= 2, fields[0] == "ether" else { continue }
+            let value = fields[1].lowercased()
+            let parts = value.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count == 6,
+                  parts.allSatisfy({ $0.count == 2 && $0.allSatisfy { "0123456789abcdef".contains($0) } }),
+                  value != "02:00:00:00:00:00" else { return nil }
+            return value
+        }
+        return nil
     }
 
     private static func numericHost(_ address: UnsafePointer<sockaddr>) -> String? {

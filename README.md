@@ -26,6 +26,10 @@ macip a show en0
 macip route
 ```
 
+Each interface uses aligned, labeled fields: current MAC address, IPv4/prefix, dotted Mask, Broadcast and IPv6/prefix. MAC and broadcast appear only when provided by the interface; neither is invented for tunnels. Wi-Fi MAC uses the system `ifconfig` tool to read the current address (including Private Wi-Fi Address), since the address API can return a placeholder. If macOS hides the current MAC, the hardware address is shown with a `hardware` label. This can differ from Private Wi-Fi Address. If neither is available, Wi-Fi MAC is labeled `unavailable`. Broadcast is IPv4 only.
+
+With `-c`, interface names are cyan, MAC addresses yellow, IPv4 and broadcast magenta, IPv6 blue, and UP green. Labels and masks remain neutral.
+
 IPv4 addresses include both the prefix length and dotted subnet mask. IPv6 includes the prefix and scope when applicable. The default view keeps Wi-Fi (including disconnected Wi-Fi), connected links even before they get an IP, interfaces with IPv4 or non-link-local IPv6, and the primary IPv4/IPv6 interfaces. Unused ports, internal Apple interfaces and link-local-only tunnels are hidden. Unknown types are retained conservatively. `--all` shows everything; `a show NAME` always shows the requested interface.
 
 `UP` is an administrative interface state, not proof that the Internet works. `NO LINK` uses the system link state when available, and `NO IP` means no address has been assigned. Tunnel interfaces are not automatically identified as VPNs. `route` shows primary service routing information, not the complete routing table.

@@ -3,7 +3,7 @@ import Foundation
 import MacIPCore
 import SystemConfiguration
 
-private let version = "0.1.2"
+private let version = "0.2.0"
 
 private enum CLIError: Error, CustomStringConvertible {
     case usage(String)
@@ -80,15 +80,21 @@ private struct Style {
     }
 }
 
-private func addressText(_ address: NetworkAddress) -> String {
-    let value = safe(address.address)
-    if let length = address.prefixLength {
-        let mask = address.family == "inet" ? address.netmask.map { "  mask " + safe($0) } ?? "" : ""
-        let scope = address.isLinkLocal ? "  link-local" : ""
-        return "\(address.family) \(value)/\(length)\(mask)\(scope)"
+private func field(_ label: String, _ value: String, color: String, style: Style) {
+    let padding = String(repeating: " ", count: max(1, 10 - label.count))
+    print("    \(label)\(padding)\(style.paint(safe(value), code: color))")
+}
+
+private func showAddress(_ address: NetworkAddress, style: Style) {
+    let prefix = address.prefixLength.map { "/\($0)" } ?? ""
+    let scope = address.isLinkLocal ? " · link-local" : ""
+    let isIPv4 = address.family == "inet"
+    field(isIPv4 ? "IPv4" : "IPv6", address.address + prefix + scope,
+          color: isIPv4 ? "1;35" : "1;34", style: style)
+    if isIPv4, let mask = address.netmask { field("Mask", mask, color: "0", style: style) }
+    if isIPv4, let broadcast = address.broadcast {
+        field("Broadcast", broadcast, color: "1;35", style: style)
     }
-    if let mask = address.netmask, !mask.isEmpty { return "\(address.family) \(value) mask \(safe(mask))" }
-    return "\(address.family) \(value)"
 }
 
 private func run() throws {
@@ -112,19 +118,24 @@ private func run() throws {
         return interface.isRelevant
     }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
 
-    for interface in visible {
+    for (index, interface) in visible.enumerated() {
+        if index > 0 { print() }
         let state = !interface.isUp ? "DOWN" : interface.isLinkActive == false ? "NO LINK"
             : interface.addresses.isEmpty ? "NO IP" : "UP"
         let stateColor = state == "UP" ? "32" : state == "NO IP" ? "33" : "90"
-        print("\(style.paint(safe(interface.name), code: "1"))  \(safe(interface.label))  \(style.paint(state, code: stateColor))")
+        print("\(style.paint(safe(interface.name), code: "1;36")) · \(safe(interface.label)) · \(style.paint(state, code: stateColor))")
+        if let mac = interface.macAddress {
+            field("MAC", mac + (interface.macIsHardware ? " · hardware" : ""), color: "1;33", style: style)
+        }
+        else if interface.isWiFi { field("MAC", "unavailable", color: "90", style: style) }
         if interface.addresses.isEmpty {
-            print("  (no IP address)")
+            print("    (no IP address)")
         } else {
-            for address in interface.addresses { print("  \(addressText(address))") }
+            for address in interface.addresses { showAddress(address, style: style) }
         }
     }
     let hidden = interfaces.count - visible.count
-    if options.interfaceName == nil && hidden > 0 { print("\(hidden) interfaces hidden; use --all to show them.") }
+    if options.interfaceName == nil && hidden > 0 { print("\n\(hidden) interfaces hidden; use --all to show them.") }
 }
 
 private func showRoutes() {

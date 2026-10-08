@@ -110,6 +110,31 @@ struct MacIPChecks {
         try check(interface("en0", ["192.168.1.4", "2001:db8::1", "fe80::1"]).addresses.count == 3,
                   "Filtering does not discard interface addresses")
 
+        guard let nameOffset = MemoryLayout<sockaddr_dl>.offset(of: \.sdl_nlen),
+              let lengthOffset = MemoryLayout<sockaddr_dl>.offset(of: \.sdl_alen),
+              let dataOffset = MemoryLayout<sockaddr_dl>.offset(of: \.sdl_data) else {
+            throw CheckFailure(description: "Cannot locate link address fields")
+        }
+        func mac(_ bytes: [UInt8]) -> String? {
+            bytes.withUnsafeBytes { pointer in
+                pointer.baseAddress.flatMap { NetworkCollector.hardwareAddress($0) }
+            }
+        }
+        for nameLength in [0, 3, 20] {
+            var bytes = [UInt8](repeating: 0, count: dataOffset + nameLength + 6)
+            bytes[0] = UInt8(bytes.count)
+            bytes[nameOffset] = UInt8(nameLength)
+            bytes[lengthOffset] = 6
+            bytes.replaceSubrange((dataOffset + nameLength)..<bytes.count, with: [0, 1, 15, 16, 128, 255])
+            try check(mac(bytes) == "00:01:0f:10:80:ff", "MAC decoding failed with name length \(nameLength)")
+            bytes[0] -= 1
+            try check(mac(bytes) == nil, "Truncated MAC was accepted")
+        }
+        try check(mac([0]) == nil, "Zero-length link address was accepted")
+        var noMac = [UInt8](repeating: 0, count: dataOffset)
+        noMac[0] = UInt8(noMac.count)
+        try check(mac(noMac) == nil, "MAC invented for a tunnel or loopback")
+
         let interfaces = try NetworkCollector.collect()
         try check(!interfaces.isEmpty, "No live interfaces collected")
         try check(Set(interfaces.map(\.name)).count == interfaces.count, "Duplicate interface names")
@@ -121,6 +146,19 @@ struct MacIPChecks {
         try check(interfaces.flatMap(\.addresses).allSatisfy {
             $0.family == "inet" || $0.family == "inet6"
         }, "Unexpected address family")
+        try check(interfaces.filter(\.isLoopback).allSatisfy {
+            $0.addresses.allSatisfy { $0.broadcast == nil }
+        }, "Loopback must not have broadcast")
+        try check(interfaces.filter { $0.name.hasPrefix("utun") }.allSatisfy {
+            $0.macAddress == nil && $0.addresses.allSatisfy { $0.broadcast == nil }
+        }, "Tunnel must not have MAC or broadcast")
+        try check(interfaces.flatMap(\.addresses).filter { $0.family == "inet6" }.allSatisfy {
+            $0.broadcast == nil
+        }, "IPv6 must not have broadcast")
+        try check(interfaces.compactMap(\.macAddress).allSatisfy { $0 != "02:00:00:00:00:00" },
+                  "Redacted MAC placeholder must never be shown as an address")
+        try check(interfaces.allSatisfy { !$0.macIsHardware || $0.macAddress != nil },
+                  "Hardware MAC marker must have an address")
         print("Passed \(count) checks.")
     }
 }
