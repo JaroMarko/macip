@@ -1,4 +1,5 @@
 import Darwin
+import Foundation
 import MacIPCore
 
 private struct CheckFailure: Error, CustomStringConvertible {
@@ -13,6 +14,21 @@ struct MacIPChecks {
             guard condition else { throw CheckFailure(description: message) }
             count += 1
         }
+
+        let command = NetworkCollector.readCommandOutput(executable: "/usr/bin/printf", arguments: ["%s", "hello"])
+        try check(command == Data("hello".utf8), "Command output must be captured")
+        try check(NetworkCollector.readCommandOutput(executable: "/usr/bin/false", arguments: []) == nil,
+                  "Failed command must permit metadata fallback")
+        try check(NetworkCollector.readCommandOutput(executable: "/nonexistent/macip-command", arguments: []) == nil,
+                  "Missing command must permit metadata fallback")
+        let started = Date()
+        try check(NetworkCollector.readCommandOutput(executable: "/bin/sleep", arguments: ["5"], timeout: 0.1) == nil,
+                  "Stalled command must permit metadata fallback")
+        try check(Date().timeIntervalSince(started) < 2, "Deadline must cover blocked pipe reads")
+        let large = NetworkCollector.readCommandOutput(executable: "/usr/bin/head", arguments: ["-c", "131072", "/dev/zero"])
+        try check(large?.count == 131072, "Output larger than the pipe buffer must not deadlock")
+        try check(NetworkCollector.readCommandOutput(executable: "/bin/sleep", arguments: ["5"], timeout: 0) == nil,
+                  "Invalid timeout must not launch a command")
 
         let macs = NetworkCollector.parseHardwareAddresses("""
             ether aa:bb:cc:dd:ee:ff
@@ -32,6 +48,21 @@ struct MacIPChecks {
         try check(macs == ["en0": "aa:bb:cc:dd:ee:01", "en3": "aa:bb:cc:dd:ee:03"],
                   "Batch MAC parsing must preserve interface ownership and skip redacted/invalid addresses")
         try check(NetworkCollector.parseHardwareAddresses("").isEmpty, "Empty MAC output must be safe")
+
+        for invalid in ["aa:bb:cc:dd:ee", "aa:bb:cc:dd:ee:gg", "a:bb:cc:dd:ee:ff", "02:00:00:00:00:00"] {
+            try check(NetworkCollector.parseHardwareAddresses("en0: flags=0\n\tether \(invalid)\n").isEmpty,
+                      "Invalid MAC accepted: \(invalid)")
+        }
+        for size in [4, 16] {
+            for prefix in 0...(size * 8) {
+                let bytes = (0..<size).map { index -> UInt8 in
+                    let bits = max(0, min(8, prefix - index * 8))
+                    return bits == 0 ? 0 : UInt8(255 << (8 - bits) & 255)
+                }
+                try check(NetworkCollector.prefixLength(bytes: bytes) == prefix,
+                          "Prefix /\(prefix) failed for \(size)-byte mask")
+            }
+        }
 
         for (bytes, expected) in [
             ([UInt8](repeating: 0, count: 4), 0),

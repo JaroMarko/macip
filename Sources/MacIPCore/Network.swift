@@ -64,8 +64,16 @@ public enum NetworkCollector {
 
         let metadata = interfaceMetadata()
         let hardwareEthernet = hardwareEthernetNames().intersection(metadata.ethernet)
+        // Fetch link and primary-route state in one snapshot, rather than opening
+        // a temporary dynamic-store session for each interface.
+        let store = SCDynamicStoreCreate(nil, "macip" as CFString, nil, nil)
+        let state = store.flatMap {
+            SCDynamicStoreCopyMultiple($0,
+                ["State:/Network/Global/IPv4", "State:/Network/Global/IPv6"] as CFArray,
+                ["State:/Network/Interface/.*/Link"] as CFArray) as? [String: Any]
+        } ?? [:]
         let primary = Set(["IPv4", "IPv6"].compactMap { family -> String? in
-            let value = SCDynamicStoreCopyValue(nil, "State:/Network/Global/\(family)" as CFString) as? [String: Any]
+            let value = state["State:/Network/Global/\(family)"] as? [String: Any]
             return value?["PrimaryInterface"] as? String
         })
         var records: [String: (flags: UInt32, addresses: [NetworkAddress], mac: String?)] = [:]
@@ -104,7 +112,7 @@ public enum NetworkCollector {
 
         return records.keys.sorted().compactMap { name in
             guard let record = records[name] else { return nil }
-            let link = SCDynamicStoreCopyValue(nil, "State:/Network/Interface/\(name)/Link" as CFString) as? [String: Any]
+            let link = state["State:/Network/Interface/\(name)/Link"] as? [String: Any]
             // macOS may redact Wi-Fi MAC in getifaddrs. ifconfig reports the current
             // address, including Private Wi-Fi Address; hardware metadata may not.
             let needsCurrentMAC = metadata.wifi.contains(name) || record.mac == "02:00:00:00:00:00"
@@ -167,6 +175,12 @@ public enum NetworkCollector {
                         providers.append(type)
                         break
                     }
+                }
+                // The nearest recognized provider decides the result; upstream
+                // hubs/controllers cannot change it.
+                if !providers.isEmpty {
+                    IOObjectRelease(node)
+                    break
                 }
                 var parent: io_registry_entry_t = 0
                 let status = IORegistryEntryGetParentEntry(node, kIOServicePlane, &parent)
@@ -283,22 +297,38 @@ public enum NetworkCollector {
     }
 
     private static func currentHardwareAddresses() -> [String: String] {
+        guard let data = readCommandOutput(executable: "/sbin/ifconfig", arguments: ["-a"]),
+              let text = String(data: data, encoding: .utf8) else { return [:] }
+        return parseHardwareAddresses(text)
+    }
+
+    /// Read a trusted leaf command without a shell. The deadline sends SIGTERM
+    /// during pipe draining or completion; the command must honor SIGTERM and
+    /// must not leave descendants holding stdout open (as with /sbin/ifconfig).
+    public static func readCommandOutput(executable: String, arguments: [String],
+                                         timeout: Double = 1) -> Data? {
+        guard timeout > 0, timeout.isFinite else { return nil }
         let process = Process()
         let output = Pipe()
         let finished = DispatchSemaphore(value: 0)
-        process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
-        process.arguments = ["-a"]
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardInput = FileHandle.nullDevice
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
-        // Avoid waitUntilExit's run-loop polling delay. Drain the pipe before
-        // waiting so a large interface list cannot fill it and block the child.
         process.terminationHandler = { _ in finished.signal() }
-        do { try process.run() } catch { return [:] }
+        do { try process.run() } catch { return nil }
+        let deadline = DispatchWorkItem {
+            if process.isRunning { process.terminate() }
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline)
+        defer { deadline.cancel() }
+        // Drain first so a large interface list cannot fill the pipe and block
+        // the child. The deadline terminates ifconfig if its read ever stalls.
         let data = output.fileHandleForReading.readDataToEndOfFile()
         finished.wait()
-        guard process.terminationStatus == 0,
-              let text = String(data: data, encoding: .utf8) else { return [:] }
-        return parseHardwareAddresses(text)
+        guard process.terminationReason == .exit, process.terminationStatus == 0 else { return nil }
+        return data
     }
 
     public static func parseHardwareAddresses(_ text: String) -> [String: String] {

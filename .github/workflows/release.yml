@@ -21,8 +21,12 @@ jobs:
           mkdir -p dist/package
           cp "$BIN_DIR/macip" dist/package/
           cp LICENSE README.md dist/package/
+          cp -R docs dist/package/
+          test "$(dist/package/macip --version)" = "macip ${GITHUB_REF_NAME#v}"
           codesign --force --sign - dist/package/macip
-          tar -czf dist/macip-macos-universal.tar.gz -C dist/package .
+          codesign --verify --strict dist/package/macip
+          bash scripts/check-cli.sh dist/package/macip
+          COPYFILE_DISABLE=1 tar -czf dist/macip-macos-universal.tar.gz -C dist/package .
           cd dist
           shasum -a 256 macip-macos-universal.tar.gz > SHA256SUMS
       - name: Publish release
