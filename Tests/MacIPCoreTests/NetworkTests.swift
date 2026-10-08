@@ -90,8 +90,25 @@ struct MacIPChecks {
                     NetworkAddress(family: $0.contains(":") ? "inet6" : "inet", address: $0,
                                    netmask: nil, prefixLength: nil)
                 }, isWiFi: wifi, isLinkActive: link, isPrimary: primary,
-                   isUSBEthernet: ethernet)
+                   isHardwareEthernet: ethernet)
         }
+        for (providers, expected) in [
+            (["IOEthernetInterface", "Driver", "IOUSBHostDevice"], true),
+            (["IOEthernetInterface", "Driver", "Hub", "Dock", "IOUSBHostDevice", "IOUSBHostDevice"], true),
+            (["IOEthernetInterface", "Driver", "IOPCIDevice", "ThunderboltDock"], true),
+            (["IOEthernetInterface", "AppleThunderboltIPPort", "IOPCIDevice"], false),
+            (["IOEthernetInterface", "IOUSBDeviceInterface", "IOPCIDevice"], false),
+            (["IOEthernetInterface", "UnknownProvider"], false)
+        ] {
+            try check(NetworkCollector.hasPhysicalEthernetProvider(providers) == expected,
+                      "Incorrect Ethernet provider classification: \(providers)")
+        }
+        let docks = [interface("en13", link: false, ethernet: true),
+                     interface("en21", link: false, ethernet: true),
+                     interface("en29", up: false, link: false, ethernet: true)]
+        try check(docks.filter(\.isRelevant).count == 3,
+                  "All dock Ethernet ports must remain visible without cables")
+
         let visibilityCases: [(NetworkInterface, Bool, String)] = [
             (interface("en9", wifi: true, link: false), true, "Disconnected Wi-Fi stays visible"),
             (interface("en12", link: true), true, "Connected Ethernet without IP stays visible"),

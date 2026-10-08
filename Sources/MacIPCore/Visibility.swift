@@ -19,11 +19,11 @@ extension NetworkAddress {
 }
 
 extension NetworkInterface {
-    /// Keep configured Wi-Fi, present USB Ethernet, connected links, assigned addresses and primary routes.
+    /// Keep configured Wi-Fi, present hardware Ethernet, connected links, assigned addresses and primary routes.
     /// Unknown interface types are retained conservatively; --all bypasses this policy.
     public var isRelevant: Bool {
         if isLoopback { return false }
-        if isPrimary || isWiFi || isUSBEthernet || addresses.contains(where: \.isRelevantAddress) { return true }
+        if isPrimary || isWiFi || isHardwareEthernet || addresses.contains(where: \.isRelevantAddress) { return true }
         let auxiliary = ["anpi", "awdl", "llw", "nan", "utun", "ap"].contains { prefix in
             name.hasPrefix(prefix) && name.dropFirst(prefix.count).allSatisfy(\.isNumber)
         }

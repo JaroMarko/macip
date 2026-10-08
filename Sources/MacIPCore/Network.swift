@@ -27,7 +27,7 @@ public struct NetworkInterface: Equatable, Sendable {
     public let isRunning: Bool
     public let isLoopback: Bool
     public let addresses: [NetworkAddress]
-    public let isUSBEthernet: Bool
+    public let isHardwareEthernet: Bool
     public let isWiFi: Bool
     public let isLinkActive: Bool?
     public let isPrimary: Bool
@@ -38,14 +38,14 @@ public struct NetworkInterface: Equatable, Sendable {
                 isLoopback: Bool, addresses: [NetworkAddress],
                 isWiFi: Bool = false, isLinkActive: Bool? = nil, isPrimary: Bool = false,
                 macAddress: String? = nil, macIsHardware: Bool = false,
-                isUSBEthernet: Bool = false) {
+                isHardwareEthernet: Bool = false) {
         self.name = name
         self.label = label
         self.isUp = isUp
         self.isRunning = isRunning
         self.isLoopback = isLoopback
         self.addresses = addresses
-        self.isUSBEthernet = isUSBEthernet
+        self.isHardwareEthernet = isHardwareEthernet
         self.isWiFi = isWiFi
         self.isLinkActive = isLinkActive
         self.isPrimary = isPrimary
@@ -63,7 +63,7 @@ public enum NetworkCollector {
         defer { if let head { freeifaddrs(head) } }
 
         let metadata = interfaceMetadata()
-        let usbEthernet = usbEthernetNames().subtracting(metadata.wifi)
+        let hardwareEthernet = hardwareEthernetNames().intersection(metadata.ethernet)
         let primary = Set(["IPv4", "IPv6"].compactMap { family -> String? in
             let value = SCDynamicStoreCopyValue(nil, "State:/Network/Global/\(family)" as CFString) as? [String: Any]
             return value?["PrimaryInterface"] as? String
@@ -123,7 +123,7 @@ public enum NetworkCollector {
                 isPrimary: primary.contains(name),
                 macAddress: mac,
                 macIsHardware: currentMAC == nil && mac != nil,
-                isUSBEthernet: usbEthernet.contains(name)
+                isHardwareEthernet: hardwareEthernet.contains(name)
             )
         }
     }
@@ -145,10 +145,10 @@ public enum NetworkCollector {
         return count
     }
 
-    // A live USB host device identifies a real Ethernet port without relying on
-    // localized labels or interface numbers. Internal USB device-mode links and
-    // Thunderbolt virtual ports have neither provider and remain filtered.
-    private static func usbEthernetNames() -> Set<String> {
+    // Walk every Ethernet interface's provider chain, including nested docks.
+    // USB host devices and PCIe Ethernet controllers represent physical ports.
+    // Reject virtual/device-mode providers before considering an upstream PCI bus.
+    private static func hardwareEthernetNames() -> Set<String> {
         var iterator: io_iterator_t = 0
         guard IOServiceGetMatchingServices(kIOMainPortDefault,
                 IOServiceMatching("IOEthernetInterface"), &iterator) == KERN_SUCCESS else { return [] }
@@ -158,30 +158,46 @@ public enum NetworkCollector {
         while entry != 0 {
             let name = IORegistryEntryCreateCFProperty(entry, "BSD Name" as CFString,
                                                        kCFAllocatorDefault, 0)?.takeRetainedValue() as? String
+            var providers: [String] = []
             var node = entry
             while node != 0 {
-                if IOObjectConformsTo(node, "IOUSBHostDevice") != 0 ||
-                   IOObjectConformsTo(node, "IOUSBDevice") != 0 {
-                    if let name { names.insert(name) }
-                    IOObjectRelease(node)
-                    break
+                for type in ["AppleThunderboltIPPort", "IOUSBDeviceInterface",
+                             "IOUSBHostDevice", "IOUSBDevice", "IOPCIDevice"] {
+                    if IOObjectConformsTo(node, type) != 0 {
+                        providers.append(type)
+                        break
+                    }
                 }
                 var parent: io_registry_entry_t = 0
                 let status = IORegistryEntryGetParentEntry(node, kIOServicePlane, &parent)
                 IOObjectRelease(node)
                 node = status == KERN_SUCCESS ? parent : 0
             }
+            if let name, hasPhysicalEthernetProvider(providers) { names.insert(name) }
             entry = IOIteratorNext(iterator)
         }
         return names
     }
 
-    private static func interfaceMetadata() -> (labels: [String: String], wifi: Set<String>, hardware: [String: String]) {
+    /// Provider classes are ordered from the interface toward the registry root.
+    public static func hasPhysicalEthernetProvider(_ classes: [String]) -> Bool {
+        for type in classes {
+            switch type {
+            case "AppleThunderboltIPPort", "IOUSBDeviceInterface": return false
+            case "IOUSBHostDevice", "IOUSBDevice", "IOPCIDevice": return true
+            default: continue
+            }
+        }
+        return false
+    }
+
+    private static func interfaceMetadata() -> (labels: [String: String], wifi: Set<String>, ethernet: Set<String>, hardware: [String: String]) {
         guard let interfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else {
-            return ([:], [], [:])
+            return ([:], [], [], [:])
         }
         var labels: [String: String] = [:]
         var wifi = Set<String>()
+        var ethernet = Set<String>()
         var hardware: [String: String] = [:]
         for interface in interfaces {
             if let name = SCNetworkInterfaceGetBSDName(interface),
@@ -194,11 +210,15 @@ public enum NetworkCollector {
                 wifi.insert(name as String)
             }
             if let name = SCNetworkInterfaceGetBSDName(interface),
+               SCNetworkInterfaceGetInterfaceType(interface) == kSCNetworkInterfaceTypeEthernet {
+                ethernet.insert(name as String)
+            }
+            if let name = SCNetworkInterfaceGetBSDName(interface),
                let label = SCNetworkInterfaceGetLocalizedDisplayName(interface) {
                 labels[name as String] = label as String
             }
         }
-        return (labels, wifi, hardware)
+        return (labels, wifi, ethernet, hardware)
     }
 
     private static func networkAddress(_ address: UnsafePointer<sockaddr>,
