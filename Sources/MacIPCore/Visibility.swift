@@ -27,7 +27,10 @@ extension NetworkInterface {
         let auxiliary = ["anpi", "awdl", "llw", "nan", "utun", "ap"].contains { prefix in
             name.hasPrefix(prefix) && name.dropFirst(prefix.count).allSatisfy(\.isNumber)
         }
-        if auxiliary || isLinkActive == false { return false }
+        let unaddressedVirtual = addresses.isEmpty && ["bridge", "vmenet"].contains { prefix in
+            name.hasPrefix(prefix) && name.dropFirst(prefix.count).allSatisfy(\.isNumber)
+        }
+        if auxiliary || unaddressedVirtual || isLinkActive == false { return false }
         if isLinkActive == true { return true }
         if !addresses.isEmpty { return true }
         return isLinkActive == nil && isUp
