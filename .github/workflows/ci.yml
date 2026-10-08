@@ -1,0 +1,12 @@
+name: Build and test
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift run MacIPChecks
+      - run: bash scripts/check-cli.sh .build/debug/macip
+      - run: swift build -c release --arch arm64 --arch x86_64 --product macip

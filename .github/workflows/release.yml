@@ -1,0 +1,30 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift run MacIPChecks
+      - run: bash scripts/check-cli.sh .build/debug/macip
+      - name: Build archive
+        run: |
+          swift build -c release --arch arm64 --arch x86_64 --product macip
+          BIN_DIR=$(swift build -c release --arch arm64 --arch x86_64 --product macip --show-bin-path)
+          mkdir -p dist/package
+          cp "$BIN_DIR/macip" dist/package/
+          cp LICENSE README.md dist/package/
+          codesign --force --sign - dist/package/macip
+          tar -czf dist/macip-macos-universal.tar.gz -C dist/package .
+          cd dist
+          shasum -a 256 macip-macos-universal.tar.gz > SHA256SUMS
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/macip-macos-universal.tar.gz dist/SHA256SUMS --generate-notes
