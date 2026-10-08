@@ -2,6 +2,23 @@
 
 A small, read-only IP address viewer for macOS 26 and newer. Written in Swift with no third-party dependencies.
 
+## Install with Homebrew
+
+```sh
+brew tap jaromarko/macip https://github.com/JaroMarko/macip
+brew install jaromarko/macip/macip
+ip -c a
+```
+
+Installs a prebuilt universal binary for Apple Silicon and Intel. No Swift compiler is needed to use it. Both `macip` and `ip` are installed. If another package already provides `ip`, Homebrew reports the link conflict; existing executables are not overwritten automatically.
+
+```sh
+brew update
+brew upgrade macip
+```
+
+## Usage
+
 ```sh
 macip -c a
 macip a --all
@@ -20,7 +37,7 @@ swift build -c release
 .build/release/macip -c a
 ```
 
-To use familiar Linux spelling without replacing another executable, add this to your shell configuration:
+For a source build, you can use familiar Linux spelling with a shell alias:
 
 ```sh
 alias ip=macip
@@ -38,6 +55,6 @@ bash scripts/check-cli.sh .build/debug/macip
 
 ## Release
 
-Push a `v*` version tag to build a universal Apple Silicon/Intel binary in GitHub Actions. The release includes an archive and SHA-256 checksum. Homebrew installation instructions will be added with the first release formula.
+Push a `v*` version tag to build a universal Apple Silicon/Intel binary in GitHub Actions. The release includes an archive and SHA-256 checksum. Update the version, URL, SHA-256 and version assertion in `Formula/macip.rb` after each release, then push the formula update.
 
 MIT licensed.
