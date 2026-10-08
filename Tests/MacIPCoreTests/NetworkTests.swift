@@ -14,6 +14,25 @@ struct MacIPChecks {
             count += 1
         }
 
+        let macs = NetworkCollector.parseHardwareAddresses("""
+            ether aa:bb:cc:dd:ee:ff
+        en0: flags=8863
+            ether AA:BB:CC:DD:EE:01
+        en1: flags=8863
+            ether 02:00:00:00:00:00
+        en2: flags=8863
+            ether malformed
+        utun0: flags=8051
+            inet 10.0.0.1
+        en3: flags=8863
+            ether aa:bb:cc:dd:ee:03
+        malformed header
+            ether aa:bb:cc:dd:ee:04
+        """)
+        try check(macs == ["en0": "aa:bb:cc:dd:ee:01", "en3": "aa:bb:cc:dd:ee:03"],
+                  "Batch MAC parsing must preserve interface ownership and skip redacted/invalid addresses")
+        try check(NetworkCollector.parseHardwareAddresses("").isEmpty, "Empty MAC output must be safe")
+
         for (bytes, expected) in [
             ([UInt8](repeating: 0, count: 4), 0),
             ([255, 255, 255, 0], 24),

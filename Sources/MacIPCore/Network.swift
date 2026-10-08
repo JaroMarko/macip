@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Dispatch
 import SystemConfiguration
 
 public struct NetworkAddress: Equatable, Sendable {
@@ -91,13 +92,18 @@ public enum NetworkCollector {
             records[name] = record
         }
 
+        let needsCurrentMAC = records.contains { name, record in
+            metadata.wifi.contains(name) || record.mac == "02:00:00:00:00:00"
+        }
+        let currentMACs = needsCurrentMAC ? currentHardwareAddresses() : [:]
+
         return records.keys.sorted().compactMap { name in
             guard let record = records[name] else { return nil }
             let link = SCDynamicStoreCopyValue(nil, "State:/Network/Interface/\(name)/Link" as CFString) as? [String: Any]
             // macOS may redact Wi-Fi MAC in getifaddrs. ifconfig reports the current
             // address, including Private Wi-Fi Address; hardware metadata may not.
             let needsCurrentMAC = metadata.wifi.contains(name) || record.mac == "02:00:00:00:00:00"
-            let currentMAC = needsCurrentMAC ? currentHardwareAddress(name) : record.mac
+            let currentMAC = needsCurrentMAC ? currentMACs[name] : record.mac
             let mac = currentMAC ?? metadata.hardware[name]
             return NetworkInterface(
                 name: name, label: metadata.labels[name] ?? (name.hasPrefix("utun") ? "Tunnel" : name),
@@ -219,29 +225,44 @@ public enum NetworkCollector {
         }.joined(separator: ":")
     }
 
-    private static func currentHardwareAddress(_ name: String) -> String? {
+    private static func currentHardwareAddresses() -> [String: String] {
         let process = Process()
         let output = Pipe()
+        let finished = DispatchSemaphore(value: 0)
         process.executableURL = URL(fileURLWithPath: "/sbin/ifconfig")
-        process.arguments = [name] // Argument array, never interpreted by a shell.
+        process.arguments = ["-a"]
         process.standardOutput = output
         process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return nil }
+        // Avoid waitUntilExit's run-loop polling delay. Drain the pipe before
+        // waiting so a large interface list cannot fill it and block the child.
+        process.terminationHandler = { _ in finished.signal() }
+        do { try process.run() } catch { return [:] }
         let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        finished.wait()
         guard process.terminationStatus == 0,
-              let text = String(data: data, encoding: .utf8) else { return nil }
+              let text = String(data: data, encoding: .utf8) else { return [:] }
+        return parseHardwareAddresses(text)
+    }
+
+    public static func parseHardwareAddresses(_ text: String) -> [String: String] {
+        var addresses: [String: String] = [:]
+        var name: String?
         for line in text.split(separator: "\n") {
             let fields = line.split(whereSeparator: { $0.isWhitespace })
-            guard fields.count >= 2, fields[0] == "ether" else { continue }
+            guard let first = fields.first else { continue }
+            if line.first?.isWhitespace == false {
+                name = first.hasSuffix(":") ? String(first.dropLast()) : nil
+                continue
+            }
+            guard let name, fields.count >= 2, first == "ether" else { continue }
             let value = fields[1].lowercased()
             let parts = value.split(separator: ":", omittingEmptySubsequences: false)
             guard parts.count == 6,
                   parts.allSatisfy({ $0.count == 2 && $0.allSatisfy { "0123456789abcdef".contains($0) } }),
-                  value != "02:00:00:00:00:00" else { return nil }
-            return value
+                  value != "02:00:00:00:00:00" else { continue }
+            addresses[name] = value
         }
-        return nil
+        return addresses
     }
 
     private static func numericHost(_ address: UnsafePointer<sockaddr>) -> String? {
