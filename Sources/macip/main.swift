@@ -3,7 +3,7 @@ import Foundation
 import MacIPCore
 import SystemConfiguration
 
-private let version = "0.1.0"
+private let version = "0.1.1"
 
 private enum CLIError: Error, CustomStringConvertible {
     case usage(String)
@@ -28,6 +28,7 @@ private func usage() -> String {
     Usage: macip [--help] [--version] [-c|--color] a|addr|address [show NAME] [--all]
 
     Show local interface addresses. With no arguments, behaves like `macip address`.
+    Shows Wi-Fi, connected links and interfaces with relevant addresses or primary routes.
     Use --all to include every interface, including loopback.
     macip route shows primary service routes for IPv4 and IPv6.
     """
@@ -83,15 +84,11 @@ private func addressText(_ address: NetworkAddress) -> String {
     let value = safe(address.address)
     if let length = address.prefixLength {
         let mask = address.family == "inet" ? address.netmask.map { "  mask " + safe($0) } ?? "" : ""
-        let scope = address.address.hasPrefix("fe80:") ? "  link-local" : ""
+        let scope = address.isLinkLocal ? "  link-local" : ""
         return "\(address.family) \(value)/\(length)\(mask)\(scope)"
     }
     if let mask = address.netmask, !mask.isEmpty { return "\(address.family) \(value) mask \(safe(mask))" }
     return "\(address.family) \(value)"
-}
-
-private func isHelper(_ name: String) -> Bool {
-    ["awdl", "llw", "bridge", "ap"].contains { name.hasPrefix($0) }
 }
 
 private func run() throws {
@@ -112,16 +109,14 @@ private func run() throws {
     let visible = interfaces.filter { interface in
         if let name = options.interfaceName { return interface.name == name }
         if options.showAll { return true }
-        if interface.isLoopback { return false }
-        if isHelper(interface.name) && interface.addresses.isEmpty { return false }
-        return !interface.addresses.isEmpty || interface.isUp
+        return interface.isRelevant
     }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
 
     for interface in visible {
-        let state = interface.isUp ? "UP" : "DOWN"
-        let stateColor = interface.isUp ? "32" : "90"
-        let link = interface.isRunning ? " · RUNNING" : ""
-        print("\(style.paint(safe(interface.name), code: "1"))  \(safe(interface.label))  \(style.paint(state, code: stateColor))\(link)")
+        let state = !interface.isUp ? "DOWN" : interface.isLinkActive == false ? "NO LINK"
+            : interface.addresses.isEmpty ? "NO IP" : "UP"
+        let stateColor = state == "UP" ? "32" : state == "NO IP" ? "33" : "90"
+        print("\(style.paint(safe(interface.name), code: "1"))  \(safe(interface.label))  \(style.paint(state, code: stateColor))")
         if interface.addresses.isEmpty {
             print("  (no IP address)")
         } else {

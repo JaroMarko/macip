@@ -4,7 +4,8 @@ cli=${1:-.build/debug/macip}
 "$cli" --version
 "$cli" --help >/dev/null
 "$cli" a >/dev/null
-"$cli" a --all >/dev/null
+"$cli" a --all | /usr/bin/grep -q '^lo0 '
+"$cli" a show lo0 | /usr/bin/grep -q '127.0.0.1'
 "$cli" route >/dev/null
 if "$cli" --unknown >/dev/null 2>&1; then
     echo 'Unknown option was accepted' >&2; exit 1

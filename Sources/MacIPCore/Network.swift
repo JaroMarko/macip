@@ -23,15 +23,22 @@ public struct NetworkInterface: Equatable, Sendable {
     public let isRunning: Bool
     public let isLoopback: Bool
     public let addresses: [NetworkAddress]
+    public let isWiFi: Bool
+    public let isLinkActive: Bool?
+    public let isPrimary: Bool
 
     public init(name: String, label: String, isUp: Bool, isRunning: Bool,
-                isLoopback: Bool, addresses: [NetworkAddress]) {
+                isLoopback: Bool, addresses: [NetworkAddress],
+                isWiFi: Bool = false, isLinkActive: Bool? = nil, isPrimary: Bool = false) {
         self.name = name
         self.label = label
         self.isUp = isUp
         self.isRunning = isRunning
         self.isLoopback = isLoopback
         self.addresses = addresses
+        self.isWiFi = isWiFi
+        self.isLinkActive = isLinkActive
+        self.isPrimary = isPrimary
     }
 }
 
@@ -43,7 +50,11 @@ public enum NetworkCollector {
         }
         defer { if let head { freeifaddrs(head) } }
 
-        let labels = interfaceLabels()
+        let metadata = interfaceMetadata()
+        let primary = Set(["IPv4", "IPv6"].compactMap { family -> String? in
+            let value = SCDynamicStoreCopyValue(nil, "State:/Network/Global/\(family)" as CFString) as? [String: Any]
+            return value?["PrimaryInterface"] as? String
+        })
         var records: [String: (flags: UInt32, addresses: [NetworkAddress])] = [:]
         var current = head
         while let node = current {
@@ -63,14 +74,18 @@ public enum NetworkCollector {
 
         return records.keys.sorted().compactMap { name in
             guard let record = records[name] else { return nil }
+            let link = SCDynamicStoreCopyValue(nil, "State:/Network/Interface/\(name)/Link" as CFString) as? [String: Any]
             return NetworkInterface(
-                name: name, label: labels[name] ?? (name.hasPrefix("utun") ? "Tunnel" : name),
+                name: name, label: metadata.labels[name] ?? (name.hasPrefix("utun") ? "Tunnel" : name),
                 isUp: record.flags & UInt32(IFF_UP) != 0,
                 isRunning: record.flags & UInt32(IFF_RUNNING) != 0,
                 isLoopback: record.flags & UInt32(IFF_LOOPBACK) != 0,
                 addresses: record.addresses.sorted {
                     ($0.family, $0.address) < ($1.family, $1.address)
-                }
+                },
+                isWiFi: metadata.wifi.contains(name),
+                isLinkActive: link?["Active"] as? Bool,
+                isPrimary: primary.contains(name)
             )
         }
     }
@@ -92,18 +107,23 @@ public enum NetworkCollector {
         return count
     }
 
-    private static func interfaceLabels() -> [String: String] {
+    private static func interfaceMetadata() -> (labels: [String: String], wifi: Set<String>) {
         guard let interfaces = SCNetworkInterfaceCopyAll() as? [SCNetworkInterface] else {
-            return [:]
+            return ([:], [])
         }
         var labels: [String: String] = [:]
+        var wifi = Set<String>()
         for interface in interfaces {
+            if let name = SCNetworkInterfaceGetBSDName(interface),
+               SCNetworkInterfaceGetInterfaceType(interface) == kSCNetworkInterfaceTypeIEEE80211 {
+                wifi.insert(name as String)
+            }
             if let name = SCNetworkInterfaceGetBSDName(interface),
                let label = SCNetworkInterfaceGetLocalizedDisplayName(interface) {
                 labels[name as String] = label as String
             }
         }
-        return labels
+        return (labels, wifi)
     }
 
     private static func networkAddress(_ address: UnsafePointer<sockaddr>,
