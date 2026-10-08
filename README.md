@@ -30,7 +30,7 @@ Each interface uses aligned, labeled fields: current MAC address, IPv4/prefix, d
 
 With `-c`, interface names are cyan, MAC addresses yellow, IPv4 and broadcast magenta, IPv6 blue, and UP green. Labels and masks remain neutral.
 
-IPv4 addresses include both the prefix length and dotted subnet mask. IPv6 includes the prefix and scope when applicable. The default view keeps Wi-Fi (including disconnected Wi-Fi), connected links even before they get an IP, interfaces with IPv4 or non-link-local IPv6, and the primary IPv4/IPv6 interfaces. Unused ports, internal Apple interfaces and link-local-only tunnels are hidden. Unknown types are retained conservatively. `--all` shows everything; `a show NAME` always shows the requested interface.
+IPv4 addresses include both the prefix length and dotted subnet mask. IPv6 shows a clean address with its prefix. For link-local IPv6, a separate `Ping` field contains the scoped address (`fe80::…%en0`) without the prefix, ready to copy as the destination for `ping6`. The default view keeps Wi-Fi (including disconnected Wi-Fi), connected links even before they get an IP, interfaces with IPv4 or non-link-local IPv6, and the primary IPv4/IPv6 interfaces. Unused ports, internal Apple interfaces and link-local-only tunnels are hidden. Unknown types are retained conservatively. `--all` shows everything; `a show NAME` always shows the requested interface.
 
 `UP` is an administrative interface state, not proof that the Internet works. `NO LINK` uses the system link state when available, and `NO IP` means no address has been assigned. Tunnel interfaces are not automatically identified as VPNs. `route` shows primary service routing information, not the complete routing table.
 

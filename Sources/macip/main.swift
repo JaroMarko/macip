@@ -3,7 +3,7 @@ import Foundation
 import MacIPCore
 import SystemConfiguration
 
-private let version = "0.2.0"
+private let version = "0.2.1"
 
 private enum CLIError: Error, CustomStringConvertible {
     case usage(String)
@@ -85,12 +85,17 @@ private func field(_ label: String, _ value: String, color: String, style: Style
     print("    \(label)\(padding)\(style.paint(safe(value), code: color))")
 }
 
-private func showAddress(_ address: NetworkAddress, style: Style) {
+private func showAddress(_ address: NetworkAddress, interfaceName: String, style: Style) {
     let prefix = address.prefixLength.map { "/\($0)" } ?? ""
     let scope = address.isLinkLocal ? " · link-local" : ""
     let isIPv4 = address.family == "inet"
-    field(isIPv4 ? "IPv4" : "IPv6", address.address + prefix + scope,
+    let host = isIPv4 ? address.address : String(address.address.split(separator: "%", maxSplits: 1).first ?? "")
+    field(isIPv4 ? "IPv4" : "IPv6", host + prefix + scope,
           color: isIPv4 ? "1;35" : "1;34", style: style)
+    if !isIPv4 && address.isLinkLocal {
+        let target = address.address.contains("%") ? address.address : host + "%" + interfaceName
+        field("Ping", target, color: "90", style: style)
+    }
     if isIPv4, let mask = address.netmask { field("Mask", mask, color: "0", style: style) }
     if isIPv4, let broadcast = address.broadcast {
         field("Broadcast", broadcast, color: "1;35", style: style)
@@ -131,7 +136,7 @@ private func run() throws {
         if interface.addresses.isEmpty {
             print("    (no IP address)")
         } else {
-            for address in interface.addresses { showAddress(address, style: style) }
+            for address in interface.addresses { showAddress(address, interfaceName: interface.name, style: style) }
         }
     }
     let hidden = interfaces.count - visible.count
